@@ -1,4 +1,13 @@
 # retico-FASTASR
+## Install Requirements
+
+``` bash
+git clone https://github.com/allenai/OLMoASR.git
+pip install -r requirements/requirements.txt
+pip install -e .
+
+## Runner Example
+```
 ``` python
 import sys, os
 from retico import *
@@ -52,4 +61,18 @@ mic.stop()
 asr.stop()
 cb.stop()
 
+```
+
+## Citations
+
+```
+@misc{ngo2025olmoasropenmodelsdata,
+      title={OLMoASR: Open Models and Data for Training Robust Speech Recognition Models}, 
+      author={Huong Ngo and Matt Deitke and Martijn Bartelds and Sarah Pratt and Josh Gardner and Matt Jordan and Ludwig Schmidt},
+      year={2025},
+      eprint={2508.20869},
+      archivePrefix={arXiv},
+      primaryClass={cs.SD},
+      url={https://arxiv.org/abs/2508.20869}, 
+}
 ```
