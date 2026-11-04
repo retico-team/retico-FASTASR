@@ -12,40 +12,20 @@ import threading
 import retico_core
 from retico_core.audio import AudioIU
 from retico_core.text import SpeechRecognitionIU
-import olmoasr
 import transformers
 import pydub
+import olmoasr
 import webrtcvad
 import numpy as np
 import time
 
 transformers.logging.set_verbosity_error()
+from transformers import AutoModel
 
 class FASTASR:
-    def __init__(
-        self,
-        OlMoASR="allenai/OLMoASR",
-        framerate=16_000,
-        silence_dur=1,
-        vad_agressiveness=3,
-        silence_threshold=0.75,
-        language=None,
-        task="transcribe"
-    ):
-        self.model = olmoasr.load_model("medium", inference=True)
-
-        if language == None: 
-            self.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
-            language="english", task="transcribe")
-            print("Defaulting to english.")
-
-        else:
-            self.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
-                language=language, task=task)
-            print("Input Language: ", language)
-            print("Task: ", task)
-
-
+    def __init__(self, framerate=16_000, silence_dur=1, vad_agressiveness=3,
+                 silence_threshold=0.75, model_size="base", **_ignored):
+        self.model = olmoasr.load_model(model_size, inference=True)  # tiny -> OLMoASR-tiny.en
         self.audio_buffer = []
         self.framerate = framerate
         self.vad = webrtcvad.Vad(vad_agressiveness)
@@ -93,24 +73,43 @@ class FASTASR:
 
         if not self.vad_state and not silence:
             self.vad_state = True
-            self.audio_buffer = self.audio_buffer[-self.get_n_sil_frames() :]
+            self.audio_buffer = self.audio_buffer[-self.get_n_sil_frames():]
 
         if not self.vad_state:
             return None, False
 
-        full_audio = b""
-        for a in self.audio_buffer:
-            full_audio += a
-        npa = np.frombuffer(full_audio, dtype=np.int16).astype(np.double) / 32768.0 # normalize between -1 and 1
+        flags = [self.vad.is_speech(a, 16_000) for a in self.audio_buffer]
+        speech_idx = [i for i, f in enumerate(flags) if f]
+
+        if len(speech_idx) < 5: 
+            if silence:
+                self.vad_state = False
+                self.audio_buffer = []
+                return None, False
+            return None, self.vad_state
+
+        frame_s = len(self.audio_buffer[0]) / 2 / 16_000
+        pad = int(0.3 / frame_s)
+        start = max(0, speech_idx[0] - pad)
+        end = min(len(self.audio_buffer), speech_idx[-1] + pad + 1)
+        full_audio = b"".join(self.audio_buffer[start:end])
+
+        npa = np.frombuffer(full_audio, dtype=np.int16).astype(np.float32) / 32768.0
         if len(npa) < 10:
             return None, False
-        input_features = self.processor(
-            npa, sampling_rate=16000, return_tensors="pt"
-        ).input_features
 
-        predicted_ids = self.model.generate(input_features, forced_decoder_ids=self.forced_decoder_ids)
-        transcription = self.processor.batch_decode(predicted_ids,skip_special_tokens=True)[0]
-        
+        result = self.model.transcribe(
+            npa,
+            fp16=False,                      # also silences the FP16 warning
+            temperature=0.0,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+        )
+        segs = [s for s in result.get("segments", [])
+                if s.get("no_speech_prob", 0) < 0.6 and s.get("avg_logprob", 0) > -1.0]
+        transcription = " ".join(s["text"].strip() for s in segs)
 
         if silence:
             self.vad_state = False
@@ -123,14 +122,14 @@ class FASTASR:
         self.vad_state = True
         self.audio_buffer = []    
 
-class OlMoASRModule(retico_core.AbstractModule):
+class FastASRModule(retico_core.AbstractModule):
     @staticmethod
     def name():
         return "Fast ASR Module"
     
     @staticmethod
     def description():
-        return "A module that recognizes speech using Olmo."
+        return "A module that recognizes speech using OlMo."
     
     @staticmethod
     def input_ius():
@@ -143,7 +142,7 @@ class OlMoASRModule(retico_core.AbstractModule):
     def __init__(self, framerate=None, silence_dur=1, language=None, task="transcribe", **kwargs):
         super().__init__(**kwargs)
 
-        self.acr = OlMoASR(
+        self.acr = FASTASR(
             silence_dur=silence_dur,
             language=language,
             task=task,
